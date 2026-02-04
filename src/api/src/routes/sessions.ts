@@ -1,159 +1,332 @@
+/**
+ * Session Routes
+ * 
+ * REST API endpoints for Pump Sessions.
+ * This is the primary interface normies interact with.
+ * 
+ * "Show up. Click. Feel the speed. Get hooked."
+ */
+
 import { Router } from 'express';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import { requireAuth, optionalAuth } from '../middleware/auth';
+import { sessionService } from '../services/sessions';
+import { GPU_TIERS, GpuTier } from '../types/provider';
+import { orchestrator } from '../services/orchestrator';
 
 const router = Router();
 
-// GPU Tiers available
-const GPU_TIERS = {
-  starter: {
-    name: 'Starter',
-    gpus: ['RTX 4090', 'RTX 5090'],
-    pricePerMinute: 0.15,
-    description: 'Great for learning and small projects',
-  },
-  pro: {
-    name: 'Pro',
-    gpus: ['A100 40GB', 'A100 80GB'],
-    pricePerMinute: 0.45,
-    description: 'Production workloads and medium training',
-  },
-  beast: {
-    name: 'Beast Mode',
-    gpus: ['H100 80GB', '8x H100 NVLink'],
-    pricePerMinute: 1.50,
-    description: 'Maximum performance for serious work',
-  },
-  ultra: {
-    name: 'Ultra Beast',
-    gpus: ['8x B300', '16x B300'],
-    pricePerMinute: 4.00,
-    description: 'Render an Oscar-winning film in hours',
-  },
-};
+// =============================================================================
+// PUBLIC ENDPOINTS (No Auth Required)
+// =============================================================================
 
-// Validation schemas
-const createSessionSchema = z.object({
-  tier: z.enum(['starter', 'pro', 'beast', 'ultra']),
-  modelId: z.string().optional(),
-  duration: z.number().min(5).max(1440).optional(), // 5 min to 24 hours
-});
-
-// GET /api/sessions/tiers - List available GPU tiers
-router.get('/tiers', (req, res) => {
+/**
+ * GET /api/sessions/tiers
+ * List available GPU tiers with pricing
+ */
+router.get('/tiers', async (req, res) => {
+  const tiers = Object.entries(GPU_TIERS).map(([key, config]) => ({
+    id: key,
+    ...config,
+    pricePerHour: config.pricePerMinute * 60,
+  }));
+  
   res.json({
-    tiers: GPU_TIERS,
-    message: 'Select a tier to start pumping',
+    tiers,
+    message: "Pick your power level. We'll handle the rest. 💪",
   });
 });
 
-// POST /api/sessions/create - Create a new Pump Session
-router.post('/create', async (req, res) => {
+/**
+ * GET /api/sessions/availability
+ * Check real-time GPU availability across all providers
+ */
+router.get('/availability', async (req, res) => {
   try {
-    const { tier, modelId, duration } = createSessionSchema.parse(req.body);
+    const healthChecks = await orchestrator.checkAllProviders();
     
-    const sessionId = `pump_${uuidv4()}`;
-    const tierInfo = GPU_TIERS[tier];
+    const availability = healthChecks.map(h => ({
+      provider: h.provider,
+      isHealthy: h.isHealthy,
+      latencyMs: h.latencyMs,
+      gpus: h.availableGpus,
+    }));
     
-    // TODO: Actually provision GPU via provider plugin
-    // TODO: Check user balance/credits
-    // TODO: Store session in DB
+    res.json({
+      availability,
+      totalProviders: healthChecks.length,
+      healthyProviders: healthChecks.filter(h => h.isHealthy).length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to check availability' });
+  }
+});
+
+// =============================================================================
+// AUTHENTICATED ENDPOINTS
+// =============================================================================
+
+const createSessionSchema = z.object({
+  tier: z.enum(['starter', 'pro', 'beast', 'ultra'] as const),
+  type: z.enum(['burst', 'vpn', 'home']).optional(),
+  modelId: z.string().optional(),
+  estimatedMinutes: z.number().min(5).max(1440).optional(),
+});
+
+/**
+ * POST /api/sessions/create
+ * Create a new Pump Session
+ * 
+ * The magic endpoint. User picks tier, we spin up a GPU.
+ * No terminal. No SSH. Just click and pump.
+ */
+router.post('/create', requireAuth, async (req, res) => {
+  try {
+    const { tier, type, modelId, estimatedMinutes } = createSessionSchema.parse(req.body);
+    
+    const result = await sessionService.createSession({
+      userId: req.user!.userId,
+      type: type || 'burst',
+      tier: tier as GpuTier,
+      modelId,
+      estimatedMinutes,
+    });
+    
+    if (!result.success) {
+      return res.status(503).json({
+        error: 'Provisioning failed',
+        message: result.error,
+        suggestion: 'Try a different tier or wait a moment and retry.',
+      });
+    }
+    
+    const session = result.session!;
+    const tierConfig = GPU_TIERS[tier];
     
     res.status(201).json({
-      sessionId,
-      status: 'provisioning',
-      tier,
-      tierInfo,
-      modelId: modelId || 'none',
-      estimatedReady: '30-60 seconds',
-      accessUrl: `https://pump.me/session/${sessionId}`,
-      message: '🚀 Your GPU is warming up!',
+      sessionId: session.id,
+      status: session.status,
+      tier: session.tier,
+      tierInfo: {
+        name: tierConfig.name,
+        description: tierConfig.description,
+        pricePerMinute: `$${tierConfig.pricePerMinute.toFixed(2)}`,
+        pricePerHour: `$${(tierConfig.pricePerMinute * 60).toFixed(2)}`,
+      },
+      provider: session.provider,
+      modelId: session.modelId,
+      accessUrl: session.accessUrl,
+      message: session.status === 'ready'
+        ? "🚀 Your GPU is ready! Start pumping!"
+        : "🔧 Your GPU is warming up. Check status in a moment.",
+      _links: {
+        self: `/api/sessions/${session.id}`,
+        start: `/api/sessions/${session.id}/start`,
+        stop: `/api/sessions/${session.id}/stop`,
+        metrics: `/api/sessions/${session.id}/metrics`,
+      },
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: error.errors,
+      });
     }
+    console.error('Session creation error:', error);
     res.status(500).json({ error: 'Failed to create session' });
   }
 });
 
-// GET /api/sessions/:id - Get session status
-router.get('/:id', (req, res) => {
-  const { id } = req.params;
+/**
+ * GET /api/sessions/:id
+ * Get session status and details
+ */
+router.get('/:id', requireAuth, (req, res) => {
+  const session = sessionService.getSession(req.params.id);
   
-  // TODO: Fetch from DB
-  res.json({
-    sessionId: id,
-    status: 'active', // provisioning, active, paused, terminated
-    tier: 'starter',
-    startedAt: new Date().toISOString(),
-    runningMinutes: 0,
-    currentCost: 0,
-    accessUrl: `https://pump.me/session/${id}`,
-  });
-});
-
-// POST /api/sessions/:id/stop - Stop a session
-router.post('/:id/stop', (req, res) => {
-  const { id } = req.params;
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
   
-  // TODO: Stop GPU, calculate final bill, update DB
-  res.json({
-    sessionId: id,
-    status: 'terminated',
-    totalMinutes: 47,
-    totalCost: 7.05,
-    message: 'Session terminated. Thanks for pumping! 💪',
-  });
-});
-
-// POST /api/sessions/:id/pause - Pause a session (Pump VPN only)
-router.post('/:id/pause', (req, res) => {
-  const { id } = req.params;
+  if (session.userId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
   
-  // TODO: Pause GPU (snapshot state), stop billing
-  res.json({
-    sessionId: id,
-    status: 'paused',
-    message: 'Session paused. Resume anytime.',
-  });
-});
-
-// POST /api/sessions/:id/resume - Resume a paused session
-router.post('/:id/resume', (req, res) => {
-  const { id } = req.params;
-  
-  // TODO: Restore from snapshot, resume billing
-  res.json({
-    sessionId: id,
-    status: 'active',
-    message: 'Session resumed. Let\'s pump! 🔥',
-  });
-});
-
-// GET /api/sessions - List user's sessions
-router.get('/', (req, res) => {
-  // TODO: Fetch from DB for authenticated user
-  res.json({
-    sessions: [],
-    total: 0,
-    page: 1,
-    limit: 20,
-  });
-});
-
-// GET /api/sessions/:id/metrics - Get session metrics
-router.get('/:id/metrics', (req, res) => {
-  const { id } = req.params;
+  const tierConfig = GPU_TIERS[session.tier];
   
   res.json({
-    sessionId: id,
-    metrics: {
-      gpuUtilization: 87,
-      memoryUsed: 72,
-      temperature: 68,
-      powerDraw: 350,
+    sessionId: session.id,
+    status: session.status,
+    type: session.type,
+    tier: session.tier,
+    tierInfo: {
+      name: tierConfig.name,
+      pricePerMinute: `$${tierConfig.pricePerMinute.toFixed(2)}`,
     },
+    provider: session.provider,
+    modelId: session.modelId,
+    accessUrl: session.accessUrl,
+    timing: {
+      requestedAt: session.requestedAt,
+      provisionedAt: session.provisionedAt,
+      startedAt: session.startedAt,
+      pausedAt: session.pausedAt,
+      terminatedAt: session.terminatedAt,
+    },
+    billing: {
+      totalMinutes: session.totalMinutes,
+      totalCost: `$${(session.totalCost / 100).toFixed(2)}`,
+      pricePerMinute: `$${(session.pricePerMinute / 100).toFixed(2)}`,
+    },
+  });
+});
+
+/**
+ * POST /api/sessions/:id/start
+ * Start a ready session (begins billing)
+ */
+router.post('/:id/start', requireAuth, async (req, res) => {
+  const result = await sessionService.startSession(req.params.id, req.user!.userId);
+  
+  if (!result.success) {
+    return res.status(400).json({
+      error: 'Failed to start session',
+      message: result.error,
+    });
+  }
+  
+  res.json({
+    sessionId: result.session!.id,
+    status: result.session!.status,
+    accessUrl: result.session!.accessUrl,
+    message: "🔥 Let's pump! Billing has started.",
+    billing: {
+      pricePerMinute: `$${(result.session!.pricePerMinute / 100).toFixed(2)}`,
+      startedAt: result.session!.startedAt,
+    },
+  });
+});
+
+/**
+ * POST /api/sessions/:id/stop
+ * Stop a session (ends billing, terminates GPU)
+ */
+router.post('/:id/stop', requireAuth, async (req, res) => {
+  const result = await sessionService.stopSession(req.params.id, req.user!.userId);
+  
+  if (!result.success) {
+    return res.status(400).json({
+      error: 'Failed to stop session',
+      message: result.error,
+    });
+  }
+  
+  res.json({
+    sessionId: result.session!.id,
+    status: result.session!.status,
+    message: "💪 Session complete. Thanks for pumping!",
+    summary: {
+      totalMinutes: result.session!.totalMinutes,
+      totalCost: `$${(result.session!.totalCost / 100).toFixed(2)}`,
+      startedAt: result.session!.startedAt,
+      terminatedAt: result.session!.terminatedAt,
+    },
+  });
+});
+
+/**
+ * POST /api/sessions/:id/pause
+ * Pause a session (VPN only - pauses billing but keeps state)
+ */
+router.post('/:id/pause', requireAuth, async (req, res) => {
+  const result = await sessionService.pauseSession(req.params.id, req.user!.userId);
+  
+  if (!result.success) {
+    return res.status(400).json({
+      error: 'Failed to pause session',
+      message: result.error,
+    });
+  }
+  
+  res.json({
+    sessionId: result.session!.id,
+    status: result.session!.status,
+    message: "⏸️ Session paused. Resume anytime.",
+    billing: {
+      totalMinutes: result.session!.totalMinutes,
+      totalCostSoFar: `$${(result.session!.totalCost / 100).toFixed(2)}`,
+      pausedAt: result.session!.pausedAt,
+    },
+  });
+});
+
+/**
+ * GET /api/sessions/:id/metrics
+ * Get real-time GPU metrics for a session
+ */
+router.get('/:id/metrics', requireAuth, async (req, res) => {
+  const metrics = await sessionService.getSessionMetrics(req.params.id, req.user!.userId);
+  
+  if (!metrics) {
+    return res.status(404).json({ error: 'Metrics not available' });
+  }
+  
+  res.json({
+    sessionId: req.params.id,
+    metrics: {
+      gpuUtilization: `${metrics.gpuUtilization.toFixed(1)}%`,
+      memoryUsed: `${metrics.memoryUsed.toFixed(1)}%`,
+      temperature: `${metrics.temperature.toFixed(0)}°C`,
+      powerDraw: `${metrics.powerDraw.toFixed(0)}W`,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * GET /api/sessions
+ * List user's sessions (with pagination)
+ */
+router.get('/', requireAuth, (req, res) => {
+  const sessions = sessionService.getUserSessions(req.user!.userId);
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+  const offset = (page - 1) * limit;
+  
+  const paginatedSessions = sessions.slice(offset, offset + limit);
+  
+  res.json({
+    sessions: paginatedSessions.map(s => ({
+      sessionId: s.id,
+      type: s.type,
+      tier: s.tier,
+      status: s.status,
+      provider: s.provider,
+      totalMinutes: s.totalMinutes,
+      totalCost: `$${(s.totalCost / 100).toFixed(2)}`,
+      requestedAt: s.requestedAt,
+      terminatedAt: s.terminatedAt,
+    })),
+    pagination: {
+      total: sessions.length,
+      page,
+      limit,
+      pages: Math.ceil(sessions.length / limit),
+    },
+  });
+});
+
+/**
+ * GET /api/sessions/stats
+ * Get platform-wide session stats (admin/debug)
+ */
+router.get('/stats/overview', optionalAuth, (req, res) => {
+  const stats = sessionService.getStats();
+  
+  res.json({
+    stats,
     timestamp: new Date().toISOString(),
   });
 });

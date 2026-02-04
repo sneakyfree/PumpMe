@@ -4,16 +4,28 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 
-import authRoutes from './routes/auth';
-import sessionRoutes from './routes/sessions';
-import billingRoutes from './routes/billing';
-import modelsRoutes from './routes/models';
-import healthRoutes from './routes/health';
+import authRoutes from './routes/auth.js';
+import sessionRoutes from './routes/sessions.js';
+import billingRoutes from './routes/billing.js';
+import modelsRoutes from './routes/models.js';
+import healthRoutes from './routes/health.js';
 
+// Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Banner
+console.log(`
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   🚀 PUMP ME - The most normie-friendly GPU platform 🚀   ║
+║                                                           ║
+║   "Show up. Click. Feel the speed. Get hooked."           ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+`);
 
 // Middleware
 app.use(helmet());
