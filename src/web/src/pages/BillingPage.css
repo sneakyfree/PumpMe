@@ -1,0 +1,181 @@
+/* Billing Page Styles */
+
+.billing-page {
+    padding: 2rem;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.billing-header {
+    margin-bottom: 2rem;
+}
+
+.billing-header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 0.5rem;
+}
+
+.billing-balance-card {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(123, 47, 247, 0.1));
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: 16px;
+    padding: 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.balance-amount {
+    font-size: 2.5rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #00d4ff, #7b2ff7);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.balance-sub {
+    color: rgba(255, 255, 255, 0.5);
+    margin-top: 0.25rem;
+}
+
+.billing-section {
+    margin-bottom: 2.5rem;
+}
+
+.billing-section h2 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+/* Credit Packages */
+.credit-packages {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 1rem;
+}
+
+.credit-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+    cursor: pointer;
+    color: #fff;
+    transition: all 0.2s ease;
+}
+
+.credit-card:hover {
+    border-color: #00d4ff;
+    background: rgba(0, 212, 255, 0.05);
+}
+
+.credit-card:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.credit-amount {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: #00d4ff;
+}
+
+.credit-name {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.5);
+    margin: 0.25rem 0;
+}
+
+.credit-price {
+    font-weight: 600;
+}
+
+.credit-bonus {
+    font-size: 0.75rem;
+    color: #34c759;
+    margin-top: 0.25rem;
+    font-weight: 600;
+}
+
+/* Usage Grid */
+.usage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.usage-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.usage-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #00d4ff;
+}
+
+.usage-label {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+/* Transaction Table */
+.tx-table {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.tx-header,
+.tx-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 100px 80px;
+    padding: 0.75rem 1rem;
+    font-size: 0.85rem;
+}
+
+.tx-header {
+    background: rgba(255, 255, 255, 0.05);
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.6);
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+}
+
+.tx-row {
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tx-type {
+    text-transform: capitalize;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.tx-positive {
+    color: #34c759;
+    font-weight: 600;
+}
+
+.tx-negative {
+    color: #ff6b6b;
+    font-weight: 600;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 2rem;
+    color: rgba(255, 255, 255, 0.4);
+}

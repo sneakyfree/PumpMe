@@ -20,7 +20,16 @@
     "lint": "eslint .",
     "format": "prettier --write ."
   },
-  "keywords": ["gpu", "compute", "ai", "ml", "cloud"],
+  "keywords": [
+    "gpu",
+    "compute",
+    "ai",
+    "ml",
+    "cloud"
+  ],
   "author": "Pump Me Team",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
 }

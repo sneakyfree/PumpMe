@@ -47,9 +47,22 @@ model User {
   apiKeys       ApiKey[]
   subscriptions Subscription[]
   transactions  Transaction[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  supportTickets SupportTicket[]
+  teamMembers    TeamMember[]
+
+  // Referral system
+  referralCode  String?   @unique
+  referredBy    String?   // Referral code used at registration
+
+  // Role & metadata
+  role          String    @default("user") // user | admin | partner | reseller
+  metadata      Json?     // Flexible JSON: auto-topup, preferences, etc.
   
   @@index([email])
   @@index([stripeCustomerId])
+  @@index([referralCode])
 }
 
 model ApiKey {
@@ -112,7 +125,12 @@ model PumpSession {
   provisionedAt DateTime?
   startedAt     DateTime?
   pausedAt      DateTime?
+  endedAt       DateTime?
   terminatedAt  DateTime?
+  terminationReason String?  // user | timeout | zombie_cleanup | error | admin
+  
+  // Estimates
+  estimatedMinutes Int    @default(60)
   
   // Billing
   pricePerMinute Int      // In cents
@@ -126,6 +144,10 @@ model PumpSession {
   // Metadata
   metadata      Json?
   
+  // Standard timestamps
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
   // Relations
   metrics       SessionMetric[]
   
@@ -133,6 +155,7 @@ model PumpSession {
   @@index([status])
   @@index([provider])
   @@index([requestedAt])
+  @@index([createdAt])
 }
 
 model SessionMetric {
@@ -199,6 +222,7 @@ model Subscription {
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   // Plan
+  plan          String    // burst | vpn | home
   planId        String    // vpn_starter | vpn_pro | vpn_enterprise
   planName      String
   
@@ -218,6 +242,7 @@ model Subscription {
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime
   
+  cancelAtPeriodEnd Boolean @default(false)
   canceledAt    DateTime?
   
   createdAt     DateTime  @default(now())
@@ -245,6 +270,7 @@ model Transaction {
   // Reference
   sessionId     String?
   subscriptionId String?
+  stripePaymentId String?
   stripePaymentIntentId String?
   
   // Status
@@ -324,6 +350,7 @@ model AuditLog {
   id          String    @id @default(cuid())
   
   userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
   action      String    // user.login, session.create, billing.charge, etc.
   resource    String?   // Resource type affected
   resourceId  String?   // Resource ID affected
@@ -344,4 +371,75 @@ model AuditLog {
   @@index([userId])
   @@index([action])
   @@index([createdAt])
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type        String    // session_started | session_ended | credit_low | ...
+  title       String
+  message     String
+  actionUrl   String?
+  metadata    String?
+  read        Boolean   @default(false)
+  
+  createdAt   DateTime  @default(now())
+  
+  @@index([userId, read])
+  @@index([createdAt])
+}
+
+model SupportTicket {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String    // bug | feature | general | support | complaint | praise
+  category    String    @default("general") // general | abuse | appeal | billing | technical
+  subject     String
+  message     String
+  rating      Int?
+  sessionId   String?
+  status      String    @default("open") // open | in_progress | resolved | closed
+  priority    String    @default("low") // low | medium | high
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  @@index([userId])
+  @@index([status])
+}
+
+model Team {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  ownerId     String
+  plan        String       @default("free")
+  members     TeamMember[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  @@index([ownerId])
+}
+
+model TeamMember {
+  id          String    @id @default(cuid())
+  teamId      String
+  team        Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        String    @default("member") // owner | admin | member
+  createdAt   DateTime  @default(now())
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model VerificationToken {
+  id          String    @id @default(cuid())
+  userId      String
+  type        String    // email | phone | password_reset
+  token       String    @unique
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  @@unique([userId, type])
+  @@index([token])
 }

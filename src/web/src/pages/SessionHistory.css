@@ -1,0 +1,132 @@
+/* Session History Styles */
+
+.session-history {
+    padding: 2rem;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.sh-header {
+    margin-bottom: 1.5rem;
+}
+
+.sh-header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 0.5rem;
+}
+
+/* Filters */
+.sh-filters {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.sh-filter {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.6);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sh-filter:hover {
+    border-color: rgba(0, 212, 255, 0.3);
+}
+
+.sh-filter.active {
+    background: rgba(0, 212, 255, 0.12);
+    border-color: #00d4ff;
+    color: #fff;
+}
+
+.filter-count {
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+}
+
+/* Session cards */
+.sh-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.sh-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    transition: border-color 0.2s;
+}
+
+.sh-card:hover {
+    border-color: rgba(0, 212, 255, 0.2);
+}
+
+.sh-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.75rem;
+}
+
+.sh-card-info h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+
+.sh-meta {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.status-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.sh-card-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.sh-card-stats .stat-label {
+    display: block;
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.sh-card-stats .stat-value {
+    display: block;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #00d4ff;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.empty-state .btn {
+    margin-top: 1rem;
+}

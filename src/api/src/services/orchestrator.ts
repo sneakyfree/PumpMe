@@ -19,6 +19,9 @@ import {
   GpuTier,
 } from '../types/provider';
 import { localProvider } from '../providers/local';
+import { vastProvider } from '../providers/vast.js';
+import { runpodProvider } from '../providers/runpod.js';
+import { logger } from '../lib/logger.js';
 
 // Registry of all available providers
 const providers = new Map<string, GpuProvider>();
@@ -35,13 +38,10 @@ const providerPriority: Record<string, number> = {
 // Initialize providers
 function initProviders() {
   providers.set('local', localProvider);
-  
-  // TODO: Add more providers as they're implemented
-  // providers.set('vast', vastProvider);
-  // providers.set('runpod', runpodProvider);
-  // providers.set('lambda', lambdaProvider);
-  
-  console.log(`🔌 Orchestrator initialized with ${providers.size} provider(s)`);
+  providers.set('vast', vastProvider);
+  providers.set('runpod', runpodProvider);
+
+  logger.info(`🔌 Orchestrator initialized with ${providers.size} provider(s): ${Array.from(providers.keys()).join(', ')}`);
 }
 
 // Initialize on module load
@@ -83,10 +83,10 @@ export async function selectBestProvider(
 ): Promise<GpuProvider | null> {
   const tier = GPU_TIERS[request.tier];
   if (!tier) {
-    console.error(`Unknown tier: ${request.tier}`);
+    logger.error(`Unknown tier: ${request.tier}`);
     return null;
   }
-  
+
   // Get all healthy providers with availability
   const healthChecks = await checkAllProviders();
   const healthyProviders = healthChecks
@@ -99,16 +99,16 @@ export async function selectBestProvider(
     .filter(p => {
       // Check if provider has compatible GPUs available
       const hasGpu = p.health.availableGpus.some(
-        gpu => tier.gpuOptions.includes(gpu.type) && gpu.available > 0
+        gpu => (tier.gpuOptions as readonly string[]).includes(gpu.type) && gpu.available > 0
       );
       return hasGpu;
     })
     .sort((a, b) => a.priority - b.priority);
-  
+
   if (healthyProviders.length === 0) {
     return null;
   }
-  
+
   // If user specified max price, filter by that
   if (request.maxPricePerHour) {
     const affordable = healthyProviders.filter(p =>
@@ -120,7 +120,7 @@ export async function selectBestProvider(
       return affordable[0].provider;
     }
   }
-  
+
   return healthyProviders[0].provider;
 }
 
@@ -132,25 +132,25 @@ export async function provisionSession(
 ): Promise<ProvisionResult> {
   // Try to find the best provider
   const provider = await selectBestProvider(request);
-  
+
   if (!provider) {
     // Try each provider in priority order as fallback
     const sortedProviders = Array.from(providers.entries())
       .sort((a, b) => (providerPriority[a[0]] || 999) - (providerPriority[b[0]] || 999));
-    
+
     for (const [, p] of sortedProviders) {
       const result = await p.provision(request);
       if (result.success) {
         return result;
       }
     }
-    
+
     return {
       success: false,
       error: 'No GPU capacity available. Please try again later.',
     };
   }
-  
+
   return provider.provision(request);
 }
 
@@ -168,7 +168,7 @@ export async function getSessionStatus(
       return provider.getStatus(sessionId);
     }
   }
-  
+
   // Otherwise, check all providers
   for (const provider of providers.values()) {
     const status = await provider.getStatus(sessionId);
@@ -176,7 +176,7 @@ export async function getSessionStatus(
       return status;
     }
   }
-  
+
   return null;
 }
 
@@ -214,14 +214,14 @@ export async function getSessionMetrics(
 export async function getTierPricing(tier: GpuTier) {
   const tierConfig = GPU_TIERS[tier];
   if (!tierConfig) return null;
-  
+
   const healthChecks = await checkAllProviders();
-  
+
   const pricing = healthChecks
     .filter(h => h.isHealthy)
     .flatMap(h =>
       h.availableGpus
-        .filter(gpu => tierConfig.gpuOptions.includes(gpu.type))
+        .filter(gpu => (tierConfig.gpuOptions as readonly string[]).includes(gpu.type))
         .map(gpu => ({
           provider: h.provider,
           gpuType: gpu.type,
@@ -231,7 +231,7 @@ export async function getTierPricing(tier: GpuTier) {
         }))
     )
     .sort((a, b) => a.pricePerHour - b.pricePerHour);
-  
+
   return {
     tier,
     name: tierConfig.name,

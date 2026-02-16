@@ -22,17 +22,17 @@ const activeSessions = new Map<string, GpuInstance>();
 export class LocalProvider implements GpuProvider {
   readonly name = 'Veron 1 Local';
   readonly slug = 'local';
-  
+
   private readonly baseUrl = process.env.LOCAL_OLLAMA_URL || 'http://localhost:11434';
-  
+
   async healthCheck(): Promise<ProviderHealth> {
     const start = Date.now();
-    
+
     try {
       // Check if Ollama is responding
       const response = await fetch(`${this.baseUrl}/api/tags`);
       const latencyMs = Date.now() - start;
-      
+
       if (!response.ok) {
         return {
           provider: this.slug,
@@ -43,11 +43,11 @@ export class LocalProvider implements GpuProvider {
           error: `Ollama responded with ${response.status}`,
         };
       }
-      
+
       // Check available models
-      const data = await response.json();
+      const data = await response.json() as { models?: { name: string }[] };
       const modelCount = data.models?.length || 0;
-      
+
       return {
         provider: this.slug,
         isHealthy: true,
@@ -72,7 +72,7 @@ export class LocalProvider implements GpuProvider {
       };
     }
   }
-  
+
   async getCapabilities(): Promise<ProviderCapabilities> {
     return {
       provider: this.slug,
@@ -86,7 +86,7 @@ export class LocalProvider implements GpuProvider {
       maxPricePerHour: 9.0,
     };
   }
-  
+
   async getAvailability() {
     return [
       {
@@ -97,7 +97,7 @@ export class LocalProvider implements GpuProvider {
       },
     ];
   }
-  
+
   async provision(request: ProvisionRequest): Promise<ProvisionResult> {
     // Check if GPU is available
     if (activeSessions.size > 0) {
@@ -106,7 +106,7 @@ export class LocalProvider implements GpuProvider {
         error: 'Local GPU is currently in use. Try another provider.',
       };
     }
-    
+
     // Check tier compatibility
     if (request.tier !== 'starter') {
       return {
@@ -114,7 +114,7 @@ export class LocalProvider implements GpuProvider {
         error: `Local provider only supports 'starter' tier. Requested: ${request.tier}`,
       };
     }
-    
+
     const instance: GpuInstance = {
       id: request.sessionId,
       provider: this.slug,
@@ -132,9 +132,9 @@ export class LocalProvider implements GpuProvider {
         modelId: request.modelId,
       },
     };
-    
+
     activeSessions.set(request.sessionId, instance);
-    
+
     // If model requested, ensure it's loaded
     if (request.modelId) {
       try {
@@ -144,18 +144,18 @@ export class LocalProvider implements GpuProvider {
         // Don't fail the session, model can be loaded later
       }
     }
-    
+
     return {
       success: true,
       instance,
       estimatedReadySeconds: 0,
     };
   }
-  
+
   async getStatus(instanceId: string): Promise<GpuInstance | null> {
     return activeSessions.get(instanceId) || null;
   }
-  
+
   async start(instanceId: string): Promise<boolean> {
     const instance = activeSessions.get(instanceId);
     if (instance) {
@@ -164,7 +164,7 @@ export class LocalProvider implements GpuProvider {
     }
     return false;
   }
-  
+
   async stop(instanceId: string): Promise<boolean> {
     const instance = activeSessions.get(instanceId);
     if (instance) {
@@ -173,15 +173,15 @@ export class LocalProvider implements GpuProvider {
     }
     return false;
   }
-  
+
   async terminate(instanceId: string): Promise<boolean> {
     return activeSessions.delete(instanceId);
   }
-  
+
   async getMetrics(instanceId: string) {
     const instance = activeSessions.get(instanceId);
     if (!instance) return null;
-    
+
     // TODO: Get actual metrics from nvidia-smi
     return {
       gpuUtilization: Math.random() * 30 + 60, // Simulated 60-90%
@@ -190,7 +190,7 @@ export class LocalProvider implements GpuProvider {
       powerDraw: Math.random() * 50 + 300, // Simulated 300-350W
     };
   }
-  
+
   /**
    * Preload a model into Ollama
    */
@@ -204,28 +204,28 @@ export class LocalProvider implements GpuProvider {
       'deepseek-coder': 'deepseek-coder:33b',
       'qwen-72b': 'qwen:72b',
     };
-    
+
     const ollamaModel = modelMap[modelId] || modelId;
-    
+
     // Pull model if not exists (this is async and may take a while)
     const response = await fetch(`${this.baseUrl}/api/pull`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: ollamaModel }),
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to pull model: ${response.statusText}`);
     }
   }
-  
+
   /**
    * List available models on Ollama
    */
   async listModels(): Promise<string[]> {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`);
-      const data = await response.json();
+      const data = await response.json() as { models?: { name: string }[] };
       return data.models?.map((m: { name: string }) => m.name) || [];
     } catch {
       return [];

@@ -1,130 +1,173 @@
-import { Router } from 'express';
-import { z } from 'zod';
+/**
+ * Billing Routes — Real Prisma + Unified Pricing
+ */
+
+import { Router, Request, Response } from 'express';
+import jwt from 'jsonwebtoken';
+import { asyncHandler } from '../lib/asyncHandler.js';
+import { AuthError, AppError } from '../lib/errors.js';
+import { sendSuccess } from '../lib/response.js';
+import { prisma } from '../lib/prisma.js';
+import { CREDIT_PACKAGES, PRODUCT_TIERS } from '../config/pricing.js';
+import { JWT_SECRET } from '../config/env.js';
 
 const router = Router();
 
-// Credit packages available
-const CREDIT_PACKAGES = {
-  starter: { credits: 10, price: 10, bonus: 0 },
-  regular: { credits: 50, price: 45, bonus: 5 },
-  pro: { credits: 100, price: 80, bonus: 20 },
-  whale: { credits: 500, price: 350, bonus: 150 },
-};
+function requireUserId(req: Request): string {
+  const token = req.cookies?.token ||
+    (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+  if (!token) throw AuthError.tokenMissing();
+  try {
+    return (jwt.verify(token, JWT_SECRET) as { userId: string }).userId;
+  } catch { throw AuthError.tokenExpired(); }
+}
 
-// Subscription tiers
-const SUBSCRIPTION_TIERS = {
-  free: {
-    name: 'Free',
-    price: 0,
-    includedMinutes: 5, // 5 minutes Beast Mode free
-    features: ['5 min Beast Mode free', 'Basic support'],
-  },
-  pump_vpn: {
-    name: 'Pump VPN',
-    price: 49,
-    includedMinutes: 120,
-    features: ['120 min/month included', 'Persistent environment', 'Priority support'],
-  },
-  pump_home: {
-    name: 'Pump Home',
-    price: 149,
-    includedMinutes: 480,
-    features: ['480 min/month included', '500GB storage', 'Inference API', '24/7 support'],
-  },
-  enterprise: {
-    name: 'Enterprise',
-    price: 'custom',
-    includedMinutes: 'unlimited',
-    features: ['Unlimited usage', 'Dedicated GPUs', 'SLA', 'Custom integrations'],
-  },
-};
-
-// GET /api/billing/packages - Get credit packages
-router.get('/packages', (req, res) => {
-  res.json({
-    packages: CREDIT_PACKAGES,
-    currency: 'USD',
-    message: 'Buy credits to pump anytime',
-  });
+// GET /api/billing/credit-packages
+router.get('/credit-packages', (_req: Request, res: Response) => {
+  sendSuccess(res, { packages: CREDIT_PACKAGES });
 });
 
-// GET /api/billing/subscriptions - Get subscription tiers
-router.get('/subscriptions', (req, res) => {
-  res.json({
-    tiers: SUBSCRIPTION_TIERS,
-    currency: 'USD',
-    message: 'Subscribe for monthly included minutes',
-  });
+// GET /api/billing/subscription-tiers
+router.get('/subscription-tiers', (_req: Request, res: Response) => {
+  const tiers = Object.entries(PRODUCT_TIERS).map(([key, tier]) => ({ id: key, ...tier }));
+  sendSuccess(res, { tiers });
 });
 
-// GET /api/billing/balance - Get user's credit balance
-router.get('/balance', (req, res) => {
-  // TODO: Fetch from DB for authenticated user
-  res.json({
-    credits: 0,
-    freeMinutesRemaining: 5,
-    subscription: 'free',
-    nextBillingDate: null,
+// GET /api/billing/balance
+router.get('/balance', asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { creditBalance: true, tier: true },
   });
-});
+  if (!user) throw AuthError.invalidCredentials();
 
-// POST /api/billing/purchase - Purchase credits
-router.post('/purchase', async (req, res) => {
-  const { packageId } = req.body;
-  
-  if (!CREDIT_PACKAGES[packageId as keyof typeof CREDIT_PACKAGES]) {
-    return res.status(400).json({ error: 'Invalid package' });
+  // Check active subscription
+  const subscription = await prisma.subscription.findFirst({
+    where: { userId, status: 'active' },
+  });
+
+  sendSuccess(res, {
+    credits: user.creditBalance,
+    creditsFormatted: `$${(user.creditBalance / 100).toFixed(2)}`,
+    tier: user.tier,
+    subscription: subscription ? {
+      plan: subscription.plan,
+      includedMinutes: subscription.includedMinutes,
+      usedMinutes: subscription.usedMinutes,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+    } : null,
+  });
+}));
+
+// GET /api/billing/transactions
+router.get('/transactions', asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  const page = parseInt(req.query.page as string) || 1;
+  const pageSize = parseInt(req.query.pageSize as string) || 20;
+
+  const [transactions, total] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.transaction.count({ where: { userId } }),
+  ]);
+
+  sendSuccess(res, {
+    transactions,
+    pagination: { total, page, pageSize, totalPages: Math.ceil(total / pageSize) },
+  });
+}));
+
+// GET /api/billing/usage
+router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+
+  // Get usage for the last 30 days
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const sessions = await prisma.pumpSession.findMany({
+    where: {
+      userId,
+      createdAt: { gte: thirtyDaysAgo },
+      status: 'terminated',
+    },
+    select: { totalMinutes: true, totalCost: true, tier: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const totalMinutes = sessions.reduce((sum: number, s: { totalMinutes: number | null }) => sum + (s.totalMinutes || 0), 0);
+  const totalCost = sessions.reduce((sum: number, s: { totalCost: number | null }) => sum + (s.totalCost || 0), 0);
+
+  sendSuccess(res, {
+    period: '30d',
+    totalMinutes,
+    totalCost,
+    totalCostFormatted: `$${(totalCost / 100).toFixed(2)}`,
+    sessionCount: sessions.length,
+    sessions: sessions.slice(0, 10),
+  });
+}));
+
+// GET /api/billing/invoices
+router.get('/invoices', asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+
+  const transactions = await prisma.transaction.findMany({
+    where: { userId, type: { in: ['session_charge', 'credit_purchase', 'subscription'] } },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+
+  const invoices = transactions.map((t: { id: string; createdAt: Date; type: string; amount: number | null; description: string }) => ({
+    id: t.id,
+    date: t.createdAt,
+    type: t.type,
+    amount: t.amount,
+    amountFormatted: `$${((t.amount || 0) / 100).toFixed(2)}`,
+    description: t.description,
+    status: 'paid',
+  }));
+
+  sendSuccess(res, { invoices });
+}));
+
+// PATCH /api/billing/auto-topup
+router.patch('/auto-topup', asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  const { enabled, threshold, amount } = req.body;
+
+  if (typeof enabled !== 'boolean') {
+    throw new AppError('enabled (boolean) is required', 400);
   }
-  
-  // TODO: Create Stripe checkout session
-  res.json({
-    checkoutUrl: 'https://checkout.stripe.com/placeholder',
-    message: 'Redirecting to payment...',
-  });
-});
 
-// POST /api/billing/subscribe - Subscribe to a plan
-router.post('/subscribe', async (req, res) => {
-  const { tierId } = req.body;
-  
-  if (!SUBSCRIPTION_TIERS[tierId as keyof typeof SUBSCRIPTION_TIERS]) {
-    return res.status(400).json({ error: 'Invalid tier' });
-  }
-  
-  // TODO: Create Stripe subscription
-  res.json({
-    checkoutUrl: 'https://checkout.stripe.com/placeholder',
-    message: 'Redirecting to subscription setup...',
-  });
-});
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw AuthError.invalidCredentials();
 
-// POST /api/billing/webhook - Stripe webhook handler
-router.post('/webhook', async (req, res) => {
-  // TODO: Verify Stripe signature
-  // TODO: Handle checkout.session.completed, invoice.paid, etc.
-  res.json({ received: true });
-});
+  const currentMetadata = (user.metadata as Record<string, unknown>) || {};
+  const updatedMetadata = {
+    ...currentMetadata,
+    autoTopUpEnabled: enabled,
+    autoTopUpThreshold: threshold || 500,   // default $5
+    autoTopUpAmount: amount || 2000,         // default $20
+  };
 
-// GET /api/billing/invoices - Get user's invoices
-router.get('/invoices', (req, res) => {
-  // TODO: Fetch from Stripe/DB
-  res.json({
-    invoices: [],
-    total: 0,
+  await prisma.user.update({
+    where: { id: userId },
+    data: { metadata: updatedMetadata },
   });
-});
 
-// GET /api/billing/usage - Get usage history
-router.get('/usage', (req, res) => {
-  const { startDate, endDate } = req.query;
-  
-  // TODO: Fetch from DB
-  res.json({
-    usage: [],
-    totalMinutes: 0,
-    totalCost: 0,
-    period: { start: startDate, end: endDate },
+  sendSuccess(res, {
+    autoTopUp: {
+      enabled,
+      threshold: updatedMetadata.autoTopUpThreshold,
+      amount: updatedMetadata.autoTopUpAmount,
+      thresholdFormatted: `$${((updatedMetadata.autoTopUpThreshold as number) / 100).toFixed(2)}`,
+      amountFormatted: `$${((updatedMetadata.autoTopUpAmount as number) / 100).toFixed(2)}`,
+    },
   });
-});
+}));
 
 export default router;

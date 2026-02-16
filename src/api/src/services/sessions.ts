@@ -1,318 +1,255 @@
 /**
- * Session Service
- * 
- * The core business logic for Pump Sessions.
- * Ties together: orchestrator, billing, database, and real-time updates.
- * 
- * This is where the magic happens — normies click, GPUs spin up.
+ * Session Service — Prisma DB Integration
+ *
+ * Replaces in-memory Map with real database persistence.
+ * Manages the pump session lifecycle: create → provision → active → terminated.
  */
 
-import { orchestrator } from './orchestrator';
-import { GPU_TIERS, GpuTier, GpuInstance } from '../types/provider';
+import { prisma } from '../lib/prisma.js';
+import { logger } from '../lib/logger.js';
+import { AppError, ProviderError } from '../lib/errors.js';
+import { provisionSession, terminateSession } from './orchestrator.js';
+import { GPU_TIERS, type GpuTier } from '../config/pricing.js';
+import type { ProvisionRequest } from '../types/provider.js';
 
-// In-memory session store (replace with Prisma in production)
-interface SessionRecord {
-  id: string;
-  userId: string;
-  type: 'burst' | 'vpn' | 'home';
-  tier: GpuTier;
-  modelId?: string;
-  
-  // Provider info
-  provider: string;
-  providerInstanceId?: string;
-  instance?: GpuInstance;
-  
-  // Status
-  status: 'pending' | 'provisioning' | 'ready' | 'active' | 'paused' | 'terminated';
-  
-  // Timing (all timestamps)
-  requestedAt: Date;
-  provisionedAt?: Date;
-  startedAt?: Date;
-  pausedAt?: Date;
-  terminatedAt?: Date;
-  
-  // Billing
-  pricePerMinute: number;
-  totalMinutes: number;
-  totalCost: number; // In cents
-  lastBilledAt?: Date;
-  
-  // Access
-  accessUrl?: string;
+// ── State Machine ──────────────────────────────────────────────────────────
+
+const VALID_TRANSITIONS: Record<string, string[]> = {
+  pending: ['provisioning', 'terminated'],
+  provisioning: ['ready', 'terminated'],
+  ready: ['active', 'terminated'],
+  active: ['paused', 'terminated'],
+  paused: ['active', 'terminated'],
+  terminated: [],
+};
+
+export function canTransition(from: string, to: string): boolean {
+  return VALID_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-const sessions = new Map<string, SessionRecord>();
+// ── Billing Intervals (in-memory tracking for active sessions) ─────────
 
-// Billing interval tracker
 const billingIntervals = new Map<string, NodeJS.Timeout>();
 
-/**
- * Create a new Pump Session
- */
+// ── Session CRUD ───────────────────────────────────────────────────────────
+
 export async function createSession(params: {
   userId: string;
-  type?: 'burst' | 'vpn' | 'home';
   tier: GpuTier;
+  type: string;
   modelId?: string;
   estimatedMinutes?: number;
-}): Promise<{
-  success: boolean;
-  session?: SessionRecord;
-  error?: string;
-}> {
-  const { userId, type = 'burst', tier, modelId } = params;
-  
-  // Validate tier
-  const tierConfig = GPU_TIERS[tier];
+}) {
+  const tierConfig = GPU_TIERS[params.tier];
   if (!tierConfig) {
-    return { success: false, error: `Invalid tier: ${tier}` };
+    throw new AppError(`Invalid tier: ${params.tier}`, 400, 'INVALID_TIER');
   }
-  
-  // Generate session ID
-  const sessionId = `pump_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  
-  // Create session record
-  const session: SessionRecord = {
-    id: sessionId,
-    userId,
-    type,
-    tier,
-    modelId,
-    provider: 'pending',
-    status: 'pending',
-    requestedAt: new Date(),
-    pricePerMinute: tierConfig.pricePerMinute * 100, // Convert to cents
-    totalMinutes: 0,
-    totalCost: 0,
-  };
-  
-  sessions.set(sessionId, session);
-  
-  // Request provisioning from orchestrator
-  session.status = 'provisioning';
-  
-  const provisionResult = await orchestrator.provisionSession({
-    sessionId,
-    userId,
-    tier,
-    modelId,
+
+  // Create session record in DB
+  const session = await prisma.pumpSession.create({
+    data: {
+      userId: params.userId,
+      type: params.type || 'burst',
+      tier: params.tier,
+      gpuType: tierConfig.gpuOptions[0],
+      gpuCount: 1,
+      modelId: params.modelId || null,
+      modelName: params.modelId || null,
+      status: 'pending',
+      provider: 'pending',
+      pricePerMinute: Math.round(tierConfig.pricePerMinute * 100), // Store in cents
+      estimatedMinutes: params.estimatedMinutes || 60,
+      totalCost: 0,
+      totalMinutes: 0,
+    },
   });
-  
-  if (!provisionResult.success) {
-    session.status = 'terminated';
-    session.terminatedAt = new Date();
-    return { success: false, error: provisionResult.error };
+
+  logger.info(`Session created: ${session.id} for user ${params.userId} (tier: ${params.tier})`);
+
+  // Attempt to provision
+  try {
+    await transitionTo(session.id, 'provisioning');
+
+    const provisionRequest: ProvisionRequest = {
+      sessionId: session.id,
+      userId: params.userId,
+      tier: params.tier,
+      modelId: params.modelId,
+    };
+
+    const provisionResult = await provisionSession(provisionRequest);
+
+    if (!provisionResult.success || !provisionResult.instance) {
+      throw new AppError(provisionResult.error || 'Provisioning failed', 500, 'PROVISION_FAILED');
+    }
+
+    // Update with provision details
+    const updated = await prisma.pumpSession.update({
+      where: { id: session.id },
+      data: {
+        provider: provisionResult.instance.provider,
+        providerInstanceId: provisionResult.instance.providerInstanceId,
+        accessUrl: provisionResult.instance.accessUrl || null,
+        status: 'ready',
+      },
+    });
+
+    return updated;
+  } catch (error) {
+    // Failed to provision — mark as terminated
+    await prisma.pumpSession.update({
+      where: { id: session.id },
+      data: { status: 'terminated', endedAt: new Date() },
+    });
+    throw ProviderError.provisionFailed(
+      error instanceof Error ? error.message : 'Unknown provisioning error'
+    );
   }
-  
-  // Update session with provider info
-  session.provider = provisionResult.instance!.provider;
-  session.providerInstanceId = provisionResult.instance!.providerInstanceId;
-  session.instance = provisionResult.instance;
-  session.accessUrl = provisionResult.instance!.accessUrl;
-  session.status = 'ready';
-  session.provisionedAt = new Date();
-  
-  return { success: true, session };
 }
 
-/**
- * Start a session (begin billing)
- */
-export async function startSession(sessionId: string, userId: string): Promise<{
-  success: boolean;
-  session?: SessionRecord;
-  error?: string;
-}> {
-  const session = sessions.get(sessionId);
-  
-  if (!session) {
-    return { success: false, error: 'Session not found' };
-  }
-  
-  if (session.userId !== userId) {
-    return { success: false, error: 'Unauthorized' };
-  }
-  
+export async function startSession(sessionId: string) {
+  const session = await getSessionOrThrow(sessionId);
+
   if (session.status !== 'ready' && session.status !== 'paused') {
-    return { success: false, error: `Cannot start session in status: ${session.status}` };
+    throw new AppError(`Cannot start session in ${session.status} state`, 400, 'INVALID_STATE');
   }
-  
-  session.status = 'active';
-  session.startedAt = session.startedAt || new Date();
-  session.lastBilledAt = new Date();
-  
-  // Start billing interval (every minute)
-  startBillingInterval(sessionId);
-  
-  return { success: true, session };
+
+  const updated = await prisma.pumpSession.update({
+    where: { id: sessionId },
+    data: {
+      status: 'active',
+      startedAt: session.startedAt || new Date(),
+    },
+  });
+
+  // Start billing interval
+  startBillingInterval(sessionId, updated.pricePerMinute || 0);
+
+  logger.info(`Session started: ${sessionId}`);
+  return updated;
 }
 
-/**
- * Stop a session (end billing, cleanup)
- */
-export async function stopSession(sessionId: string, userId: string): Promise<{
-  success: boolean;
-  session?: SessionRecord;
-  finalCost?: number;
-  error?: string;
-}> {
-  const session = sessions.get(sessionId);
-  
-  if (!session) {
-    return { success: false, error: 'Session not found' };
+export async function pauseSession(sessionId: string) {
+  const session = await getSessionOrThrow(sessionId);
+
+  if (session.type !== 'vpn') {
+    throw new AppError('Only VPN sessions can be paused', 400, 'PAUSE_NOT_ALLOWED');
   }
-  
-  if (session.userId !== userId) {
-    return { success: false, error: 'Unauthorized' };
-  }
-  
-  if (session.status === 'terminated') {
-    return { success: false, error: 'Session already terminated' };
-  }
-  
+
+  await transitionTo(sessionId, 'paused');
+  stopBillingInterval(sessionId);
+
+  logger.info(`Session paused: ${sessionId}`);
+  return prisma.pumpSession.findUnique({ where: { id: sessionId } });
+}
+
+export async function stopSession(sessionId: string) {
+  const session = await getSessionOrThrow(sessionId);
+
   // Stop billing
   stopBillingInterval(sessionId);
-  
-  // Calculate final bill
-  if (session.lastBilledAt && session.status === 'active') {
-    const now = new Date();
-    const minutesSinceLastBill = Math.ceil(
-      (now.getTime() - session.lastBilledAt.getTime()) / 60000
-    );
-    session.totalMinutes += minutesSinceLastBill;
-    session.totalCost += minutesSinceLastBill * session.pricePerMinute;
-  }
-  
-  // Terminate provider instance
-  if (session.provider !== 'pending') {
-    await orchestrator.terminateSession(sessionId, session.provider);
-  }
-  
-  session.status = 'terminated';
-  session.terminatedAt = new Date();
-  
-  return {
-    success: true,
-    session,
-    finalCost: session.totalCost,
-  };
-}
 
-/**
- * Pause a session (VPN only)
- */
-export async function pauseSession(sessionId: string, userId: string): Promise<{
-  success: boolean;
-  session?: SessionRecord;
-  error?: string;
-}> {
-  const session = sessions.get(sessionId);
-  
-  if (!session) {
-    return { success: false, error: 'Session not found' };
-  }
-  
-  if (session.userId !== userId) {
-    return { success: false, error: 'Unauthorized' };
-  }
-  
-  if (session.type !== 'vpn') {
-    return { success: false, error: 'Only VPN sessions can be paused' };
-  }
-  
-  if (session.status !== 'active') {
-    return { success: false, error: `Cannot pause session in status: ${session.status}` };
-  }
-  
-  // Stop billing during pause
-  stopBillingInterval(sessionId);
-  
-  // Bill for time since last billing
-  if (session.lastBilledAt) {
-    const now = new Date();
-    const minutesSinceLastBill = Math.ceil(
-      (now.getTime() - session.lastBilledAt.getTime()) / 60000
-    );
-    session.totalMinutes += minutesSinceLastBill;
-    session.totalCost += minutesSinceLastBill * session.pricePerMinute;
-  }
-  
-  session.status = 'paused';
-  session.pausedAt = new Date();
-  
-  return { success: true, session };
-}
-
-/**
- * Get session by ID
- */
-export function getSession(sessionId: string): SessionRecord | undefined {
-  return sessions.get(sessionId);
-}
-
-/**
- * Get all sessions for a user
- */
-export function getUserSessions(userId: string): SessionRecord[] {
-  return Array.from(sessions.values())
-    .filter(s => s.userId === userId)
-    .sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
-}
-
-/**
- * Get active session count
- */
-export function getActiveSessionCount(): number {
-  return Array.from(sessions.values()).filter(
-    s => s.status === 'active' || s.status === 'ready'
-  ).length;
-}
-
-/**
- * Get session metrics
- */
-export async function getSessionMetrics(sessionId: string, userId: string) {
-  const session = sessions.get(sessionId);
-  
-  if (!session || session.userId !== userId) {
-    return null;
-  }
-  
-  if (session.provider === 'pending') {
-    return null;
-  }
-  
-  return orchestrator.getSessionMetrics(sessionId, session.provider);
-}
-
-// =============================================================================
-// BILLING HELPERS
-// =============================================================================
-
-function startBillingInterval(sessionId: string) {
-  // Clear any existing interval
-  stopBillingInterval(sessionId);
-  
-  // Bill every minute
-  const interval = setInterval(() => {
-    const session = sessions.get(sessionId);
-    if (!session || session.status !== 'active') {
-      stopBillingInterval(sessionId);
-      return;
+  // Terminate on provider
+  if (session.providerInstanceId) {
+    try {
+      await terminateSession(session.providerInstanceId, session.provider || 'local');
+    } catch (error) {
+      logger.error(`Failed to terminate provider instance for ${sessionId}:`, error);
     }
-    
-    session.totalMinutes += 1;
-    session.totalCost += session.pricePerMinute;
-    session.lastBilledAt = new Date();
-    
-    console.log(
-      `💰 Billed ${session.id}: +$${(session.pricePerMinute / 100).toFixed(2)} ` +
-      `(Total: ${session.totalMinutes} min, $${(session.totalCost / 100).toFixed(2)})`
+  }
+
+  // Calculate final bill
+  const endedAt = new Date();
+  const startedAt = session.startedAt || session.createdAt;
+  const totalMinutes = Math.ceil((endedAt.getTime() - startedAt.getTime()) / 60000);
+  const totalCost = totalMinutes * (session.pricePerMinute || 0);
+
+  const updated = await prisma.pumpSession.update({
+    where: { id: sessionId },
+    data: {
+      status: 'terminated',
+      endedAt,
+      totalMinutes,
+      totalCost,
+    },
+  });
+
+  // Deduct from user balance
+  await prisma.user.update({
+    where: { id: session.userId },
+    data: { creditBalance: { decrement: totalCost } },
+  });
+
+  logger.info(`Session stopped: ${sessionId} (${totalMinutes}min, $${(totalCost / 100).toFixed(2)})`);
+  return updated;
+}
+
+export async function getSession(sessionId: string) {
+  return prisma.pumpSession.findUnique({ where: { id: sessionId } });
+}
+
+export async function getUserSessions(userId: string, page = 1, pageSize = 20) {
+  const [sessions, total] = await Promise.all([
+    prisma.pumpSession.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.pumpSession.count({ where: { userId } }),
+  ]);
+  return { sessions, total, page, pageSize };
+}
+
+export async function getActiveSessionCount(): Promise<number> {
+  return prisma.pumpSession.count({
+    where: { status: { in: ['active', 'ready', 'provisioning'] } },
+  });
+}
+
+// ── Internal Helpers ───────────────────────────────────────────────────────
+
+async function getSessionOrThrow(sessionId: string) {
+  const session = await prisma.pumpSession.findUnique({ where: { id: sessionId } });
+  if (!session) {
+    throw new AppError('Session not found', 404, 'NOT_FOUND');
+  }
+  return session;
+}
+
+async function transitionTo(sessionId: string, newStatus: string) {
+  const session = await getSessionOrThrow(sessionId);
+  if (!canTransition(session.status, newStatus)) {
+    throw new AppError(
+      `Cannot transition from ${session.status} to ${newStatus}`,
+      400,
+      'INVALID_TRANSITION'
     );
-  }, 60000); // Every minute
-  
+  }
+  return prisma.pumpSession.update({
+    where: { id: sessionId },
+    data: { status: newStatus },
+  });
+}
+
+function startBillingInterval(sessionId: string, pricePerMinuteCents: number) {
+  stopBillingInterval(sessionId); // Clear any existing
+
+  const interval = setInterval(async () => {
+    try {
+      await prisma.pumpSession.update({
+        where: { id: sessionId },
+        data: {
+          totalMinutes: { increment: 1 },
+          totalCost: { increment: pricePerMinuteCents },
+        },
+      });
+    } catch (error) {
+      logger.error(`Billing tick failed for session ${sessionId}:`, error);
+      stopBillingInterval(sessionId);
+    }
+  }, 60_000); // Every 60 seconds
+
   billingIntervals.set(sessionId, interval);
 }
 
@@ -324,37 +261,28 @@ function stopBillingInterval(sessionId: string) {
   }
 }
 
-// =============================================================================
-// STATS & ADMIN
-// =============================================================================
+// ── Zombie Session Cleanup ─────────────────────────────────────────────────
 
-export function getStats() {
-  const allSessions = Array.from(sessions.values());
-  
-  return {
-    totalSessions: allSessions.length,
-    activeSessions: allSessions.filter(s => s.status === 'active').length,
-    readySessions: allSessions.filter(s => s.status === 'ready').length,
-    terminatedSessions: allSessions.filter(s => s.status === 'terminated').length,
-    totalMinutes: allSessions.reduce((sum, s) => sum + s.totalMinutes, 0),
-    totalRevenue: allSessions.reduce((sum, s) => sum + s.totalCost, 0),
-    byTier: {
-      starter: allSessions.filter(s => s.tier === 'starter').length,
-      pro: allSessions.filter(s => s.tier === 'pro').length,
-      beast: allSessions.filter(s => s.tier === 'beast').length,
-      ultra: allSessions.filter(s => s.tier === 'ultra').length,
+export async function cleanupZombieSessions() {
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+  const zombies = await prisma.pumpSession.findMany({
+    where: {
+      status: { in: ['active', 'provisioning', 'ready'] },
+      updatedAt: { lt: thirtyMinutesAgo },
     },
-  };
-}
+  });
 
-export const sessionService = {
-  createSession,
-  startSession,
-  stopSession,
-  pauseSession,
-  getSession,
-  getUserSessions,
-  getActiveSessionCount,
-  getSessionMetrics,
-  getStats,
-};
+  for (const zombie of zombies) {
+    try {
+      logger.warn(`Cleaning up zombie session: ${zombie.id} (last updated: ${zombie.updatedAt})`);
+      await stopSession(zombie.id);
+    } catch (error) {
+      logger.error(`Failed to cleanup zombie session ${zombie.id}:`, error);
+    }
+  }
+
+  if (zombies.length > 0) {
+    logger.info(`Cleaned up ${zombies.length} zombie sessions`);
+  }
+}

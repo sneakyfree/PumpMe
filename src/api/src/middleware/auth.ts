@@ -7,8 +7,8 @@
 
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+import { JWT_SECRET } from '../config/env.js';
+import { prisma } from '../lib/prisma.js';
 
 export interface AuthenticatedUser {
   userId: string;
@@ -29,36 +29,38 @@ declare global {
 /**
  * Require authentication - returns 401 if not authenticated
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractToken(req);
-  
+
   if (!token) {
-    return res.status(401).json({
+    res.status(401).json({
       error: 'Unauthorized',
       message: 'Authentication required. Please provide a valid token.',
     });
+    return;
   }
-  
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as {
       userId: string;
       email: string;
       tier?: string;
     };
-    
+
     req.user = {
       userId: decoded.userId,
       email: decoded.email,
       tier: decoded.tier || 'free',
       tokenType: 'session',
     };
-    
+
     next();
   } catch (error) {
-    return res.status(401).json({
+    res.status(401).json({
       error: 'Unauthorized',
       message: 'Invalid or expired token.',
     });
+    return;
   }
 }
 
@@ -67,18 +69,18 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
  */
 export function optionalAuth(req: Request, res: Response, next: NextFunction) {
   const token = extractToken(req);
-  
+
   if (!token) {
     return next();
   }
-  
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as {
       userId: string;
       email: string;
       tier?: string;
     };
-    
+
     req.user = {
       userId: decoded.userId,
       email: decoded.email,
@@ -88,7 +90,7 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction) {
   } catch {
     // Invalid token, but we don't fail - just continue without user
   }
-  
+
   next();
 }
 
@@ -97,68 +99,81 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction) {
  */
 export function requireTier(minTier: 'free' | 'starter' | 'pro' | 'enterprise') {
   const tierOrder = ['free', 'starter', 'pro', 'enterprise'];
-  
-  return (req: Request, res: Response, next: NextFunction) => {
+
+  return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      return res.status(401).json({
+      res.status(401).json({
         error: 'Unauthorized',
         message: 'Authentication required.',
       });
+      return;
     }
-    
+
     const userTierIndex = tierOrder.indexOf(req.user.tier);
     const requiredTierIndex = tierOrder.indexOf(minTier);
-    
+
     if (userTierIndex < requiredTierIndex) {
-      return res.status(403).json({
+      res.status(403).json({
         error: 'Forbidden',
         message: `This feature requires ${minTier} tier or higher. Current: ${req.user.tier}`,
         requiredTier: minTier,
         currentTier: req.user.tier,
       });
+      return;
     }
-    
+
     next();
   };
 }
 
 /**
  * API Key authentication for programmatic access
+ * Supports both X-API-Key header and Authorization: Bearer header
  */
 export async function apiKeyAuth(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers['x-api-key'] as string;
-  
-  if (!apiKey) {
+  const bearerKey = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : null;
+  const key = apiKey || bearerKey;
+
+  if (!key) {
     return res.status(401).json({
       error: 'Unauthorized',
-      message: 'API key required. Pass via X-API-Key header.',
+      message: 'API key required. Pass via X-API-Key header or Authorization: Bearer.',
     });
   }
-  
-  // API keys start with pm_live_ or pm_test_
-  if (!apiKey.startsWith('pm_')) {
-    return res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Invalid API key format.',
+
+  try {
+    const { validateApiKey } = await import('../routes/apiKeys.js');
+    const result = await validateApiKey(key);
+
+    if (!result) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Invalid or expired API key.',
+      });
+    }
+
+    // Look up user for tier info
+    const user = await prisma.user.findUnique({
+      where: { id: result.userId },
+      select: { email: true, tier: true },
     });
-  }
-  
-  // TODO: Look up API key in database, verify it's valid and active
-  // For now, accept any properly formatted key in development
-  if (process.env.NODE_ENV === 'development') {
+
     req.user = {
-      userId: 'api_user',
-      email: 'api@pumpme.io',
-      tier: 'pro',
+      userId: result.userId,
+      email: user?.email || '',
+      tier: user?.tier || 'free',
       tokenType: 'api_key',
     };
     return next();
+  } catch (err) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'API key validation failed.',
+    });
   }
-  
-  return res.status(401).json({
-    error: 'Unauthorized',
-    message: 'Invalid API key.',
-  });
 }
 
 /**
@@ -170,12 +185,12 @@ function extractToken(req: Request): string | null {
   if (authHeader?.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
-  
+
   // Check query parameter (for WebSocket connections)
   if (typeof req.query.token === 'string') {
     return req.query.token;
   }
-  
+
   return null;
 }
 
@@ -202,7 +217,7 @@ export function generateApiKey(isTest: boolean = false): { key: string; prefix: 
   const randomPart = Array.from({ length: 32 }, () =>
     'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]
   ).join('');
-  
+
   return {
     key: `${prefix}${randomPart}`,
     prefix: prefix + randomPart.slice(0, 8),

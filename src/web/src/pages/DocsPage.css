@@ -1,0 +1,171 @@
+/* API Docs Page Styles */
+
+.docs-page {
+    padding: 2rem;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.docs-page h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.docs-subtitle {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin-bottom: 1rem;
+}
+
+.docs-subtitle code {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.docs-base-url {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: rgba(0, 212, 255, 0.06);
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    margin-bottom: 2rem;
+}
+
+.base-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.docs-base-url code {
+    color: #00d4ff;
+    font-size: 0.9rem;
+}
+
+/* Groups */
+.docs-group {
+    margin-bottom: 2rem;
+}
+
+.docs-group h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.endpoints {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.endpoint {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    transition: border-color 0.2s;
+}
+
+.endpoint:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.ep-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+}
+
+.ep-method {
+    font-weight: 700;
+    font-size: 0.75rem;
+    font-family: monospace;
+    min-width: 50px;
+}
+
+.ep-path {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.ep-auth {
+    font-size: 0.7rem;
+}
+
+.ep-desc {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.4);
+    margin-bottom: 0.25rem;
+}
+
+.ep-detail {
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.35);
+    margin-top: 0.15rem;
+}
+
+.ep-detail-label {
+    font-weight: 600;
+    margin-right: 0.3rem;
+}
+
+.ep-detail code {
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+}
+
+/* Rate limits */
+.rate-limits {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 0.5rem;
+}
+
+.rate-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.85rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.rate-row:last-child {
+    border-bottom: none;
+}
+
+.rate-row span:first-child {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.rate-row span:last-child {
+    font-weight: 500;
+    color: #ff9500;
+}
+
+.rate-note {
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.3);
+    margin-top: 0.5rem;
+}
+
+.rate-note code {
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+}
